@@ -189,7 +189,6 @@ function setupDataChannel() {
 // WebSocket (フォールバック) 経由の受信
 // -------------------------
 socket.on('file-relay', (data) => {
-    // ログが多すぎると重くなるため、メタデータと完了のみログを出す
     if (typeof data.payload === 'string') {
         logDebug('サーバー経由で制御データを受信');
     }
@@ -235,22 +234,47 @@ function handleIncomingData(data) {
 }
 
 // -------------------------
-// ファイル送信処理
+// ファイル送信処理（複数ファイル対応キュー方式）
 // -------------------------
-sendBtn.addEventListener('click', () => {
-    const file = fileInput.files[0];
-    if (!file) return;
+let sendQueue = [];
+let isSending = false;
 
-    progressText.textContent = `送信中: ${file.name} ...`;
+sendBtn.addEventListener('click', () => {
+    const files = fileInput.files;
+    if (files.length === 0) return;
+
+    // 選択された全ファイルをキューに追加
+    for (let i = 0; i < files.length; i++) {
+        sendQueue.push(files[i]);
+    }
+    
+    // 入力欄をクリア（次回の選択のため）
+    fileInput.value = '';
+
+    // 送信中でなければ送信開始
+    if (!isSending) {
+        processSendQueue();
+    }
+});
+
+function processSendQueue() {
+    if (sendQueue.length === 0) {
+        isSending = false;
+        progressText.textContent = 'すべてのファイルの送信が完了しました！';
+        return;
+    }
+
+    isSending = true;
+    const file = sendQueue.shift(); // キューから最初のファイルを取り出す
+
+    progressText.textContent = `送信中: ${file.name} (残り ${sendQueue.length} 個)...`;
     progressBar.style.width = '0%';
     logDebug('ファイル送信開始: ' + file.name);
 
     const sendData = (payload) => {
         if (isP2pReady && dataChannel && dataChannel.readyState === 'open') {
-            // P2P送信
             dataChannel.send(payload);
         } else {
-            // WebSocket中継送信
             socket.emit('file-relay', { roomId: roomId, payload: payload });
         }
     };
@@ -262,7 +286,6 @@ sendBtn.addEventListener('click', () => {
     let offset = 0;
 
     reader.onload = (e) => {
-        // P2Pの場合はバッファリング制限を確認
         if (isP2pReady && dataChannel.bufferedAmount > 8 * 1024 * 1024) {
             setTimeout(() => {
                 sendData(e.target.result);
@@ -282,10 +305,14 @@ sendBtn.addEventListener('click', () => {
             if (offset < file.size) {
                 readSlice(offset);
             } else {
+                // ファイル1つ送信完了
                 sendData(JSON.stringify({ type: 'eof' }));
-                progressText.textContent = '送信完了！';
-                fileInput.value = '';
-                logDebug('ファイル送信完了');
+                logDebug('ファイル送信完了: ' + file.name);
+                
+                // 少しだけ待機（受信側の処理時間確保）してから次のファイルを送信
+                setTimeout(() => {
+                    processSendQueue();
+                }, 500);
             }
         }
     };
@@ -296,7 +323,7 @@ sendBtn.addEventListener('click', () => {
     };
 
     readSlice(0);
-});
+}
 
 // 背景アニメーション
 tsParticles.load("tsparticles", {

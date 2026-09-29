@@ -3,45 +3,45 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LinkDrop</title>
+    <title>LinkDrop - P2P File Transfer</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <div id="tsparticles"></div>
     <div class="container">
-        <h1>LinkDrop <span style="font-size: 14px; color: #7f8c8d; font-weight: normal;">- P2P File Transfer</span></h1>
+        <h1>LinkDrop <span class="subtitle">- P2P File Transfer</span></h1>
         
         <div id="setup-section">
-            <input type="text" id="room-input" placeholder="ルームIDを入力 (例: room1)">
+            <input type="text" id="room-input" placeholder="ルームIDを入力 (任意)">
             <button id="join-btn">ルームに参加</button>
         </div>
 
         <div id="transfer-section" style="display: none;">
             <p>現在のルーム: <span id="current-room"></span></p>
-            <div id="qrcode-container" style="text-align: center; margin: 15px 0;">
-                <p style="font-size: 14px; color: #555; margin-bottom: 5px;">スマホで以下のQRコードを読み取って参加</p>
-                <div id="qrcode" style="display: inline-block;"></div>
+            <p>スマホで以下のQRコードを読み取って参加</p>
+            <div id="qrcode"></div>
+            <p class="status-msg">ステータス: <span id="status">接続待ち...</span></p>
+            <div class="file-area">
+                <input type="file" id="file-input" multiple disabled>
+                <button id="send-btn" disabled>送信</button>
             </div>
-            <p>ステータス: <span id="status">接続待ち...</span></p>
             
-            <input type="file" id="file-input" disabled>
-            <button id="send-btn" disabled>送信</button>
-
-            <div class="progress-container">
-                <div id="progress-bar"></div>
+            <div class="progress-area">
+                <p id="progress-text"></p>
+                <div class="progress-bar-container">
+                    <div id="progress-bar"></div>
+                </div>
             </div>
-            <p id="progress-text"></p>
 
-            <div id="download-section">
+            <div class="downloads">
                 <h3>受信したファイル</h3>
                 <ul id="download-list"></ul>
             </div>
         </div>
     </div>
 
-    <!-- ライブラリ -->
+    <script src="https://cdn.jsdelivr.net/npm/tsparticles@2.12.0/tsparticles.bundle.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/tsparticles@2/tsparticles.bundle.min.js"></script>
     <script src="/socket.io/socket.io.js"></script>
     <script src="main.js"></script>
 </body>
