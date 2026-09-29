@@ -13,6 +13,16 @@ const progressBar = document.getElementById('progress-bar');
 const progressText = document.getElementById('progress-text');
 const downloadList = document.getElementById('download-list');
 
+// デバッグ用ログ表示
+const debugLog = document.createElement('div');
+debugLog.style.cssText = 'margin-top:20px; padding:10px; background:#f8d7da; color:#721c24; font-size:12px; height:100px; overflow-y:auto; border-radius:4px;';
+document.querySelector('.container').appendChild(debugLog);
+function logDebug(msg) {
+    console.log(msg);
+    debugLog.innerHTML += `<div>${new Date().toLocaleTimeString()} - ${msg}</div>`;
+    debugLog.scrollTop = debugLog.scrollHeight;
+}
+
 let peerConnection;
 let dataChannel;
 let remoteSocketId;
@@ -81,7 +91,7 @@ joinBtn.addEventListener('click', () => {
 
 // 他のユーザーが参加した時の処理（Offer側になる）
 socket.on('user-joined', async (userId) => {
-    console.log('Other user joined:', userId);
+    logDebug('Other user joined: ' + userId);
     remoteSocketId = userId;
     createPeerConnection();
     
@@ -93,8 +103,9 @@ socket.on('user-joined', async (userId) => {
         const offer = await peerConnection.createOffer();
         await peerConnection.setLocalDescription(offer);
         socket.emit('signal', { to: remoteSocketId, signal: peerConnection.localDescription });
+        logDebug('Sent Offer to ' + remoteSocketId);
     } catch (err) {
-        console.error('Error creating offer:', err);
+        logDebug('Error creating offer: ' + err.message);
     }
 });
 
@@ -104,6 +115,7 @@ let iceCandidateQueue = [];
 socket.on('signal', async (data) => {
     remoteSocketId = data.from;
     const signal = data.signal;
+    logDebug('Received signal: ' + (signal.type || 'candidate'));
 
     if (!peerConnection) {
         createPeerConnection();
@@ -115,6 +127,7 @@ socket.on('signal', async (data) => {
             const answer = await peerConnection.createAnswer();
             await peerConnection.setLocalDescription(answer);
             socket.emit('signal', { to: remoteSocketId, signal: peerConnection.localDescription });
+            logDebug('Sent Answer to ' + remoteSocketId);
             
             // バッファされたCandidateを追加
             while(iceCandidateQueue.length) {
@@ -122,6 +135,7 @@ socket.on('signal', async (data) => {
             }
         } else if (signal.type === 'answer') {
             await peerConnection.setRemoteDescription(new RTCSessionDescription(signal));
+            logDebug('Set Remote Answer');
             
             // バッファされたCandidateを追加
             while(iceCandidateQueue.length) {
@@ -130,17 +144,28 @@ socket.on('signal', async (data) => {
         } else if (signal.candidate) {
             if (peerConnection.remoteDescription) {
                 await peerConnection.addIceCandidate(new RTCIceCandidate(signal));
+                logDebug('Added ICE Candidate');
             } else {
                 iceCandidateQueue.push(new RTCIceCandidate(signal));
+                logDebug('Queued ICE Candidate');
             }
         }
     } catch (err) {
-        console.error('Error handling signal:', err);
+        logDebug('Error handling signal: ' + err.message);
     }
 });
 
 function createPeerConnection() {
     peerConnection = new RTCPeerConnection(configuration);
+    logDebug('Created RTCPeerConnection');
+
+    peerConnection.oniceconnectionstatechange = () => {
+        logDebug('ICE State: ' + peerConnection.iceConnectionState);
+        if (peerConnection.iceConnectionState === 'failed') {
+            statusSpan.textContent = '接続失敗 (ネットワーク制限)';
+            statusSpan.style.color = 'red';
+        }
+    };
 
     // ICE Candidateの送信
     peerConnection.onicecandidate = (event) => {
@@ -151,6 +176,7 @@ function createPeerConnection() {
 
     // DataChannelの受信（Answer側）
     peerConnection.ondatachannel = (event) => {
+        logDebug('Received DataChannel');
         dataChannel = event.channel;
         setupDataChannel();
     };
@@ -165,7 +191,7 @@ function setupDataChannel() {
     dataChannel.binaryType = 'arraybuffer';
 
     dataChannel.onopen = () => {
-        console.log('DataChannel is open');
+        logDebug('DataChannel is open');
         statusSpan.textContent = '接続完了！ファイルを送信できます';
         statusSpan.style.color = '#2ecc71';
         fileInput.disabled = false;
@@ -173,7 +199,7 @@ function setupDataChannel() {
     };
 
     dataChannel.onclose = () => {
-        console.log('DataChannel is closed');
+        logDebug('DataChannel is closed');
         statusSpan.textContent = '切断されました';
         statusSpan.style.color = '#e74c3c';
         fileInput.disabled = true;
