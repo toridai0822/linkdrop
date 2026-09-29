@@ -13,13 +13,8 @@ const progressBar = document.getElementById('progress-bar');
 const progressText = document.getElementById('progress-text');
 const downloadList = document.getElementById('download-list');
 
-// デバッグ用ログ表示
-const debugLog = document.createElement('div');
-debugLog.style.cssText = 'margin-top:20px; padding:10px; background:#f8d7da; color:#721c24; font-size:12px; height:100px; overflow-y:auto; border-radius:4px;';
-document.querySelector('.container').appendChild(debugLog);
 function logDebug(msg) {
-    debugLog.innerHTML += `<div>${new Date().toLocaleTimeString()} - ${msg}</div>`;
-    debugLog.scrollTop = debugLog.scrollHeight;
+    console.log(new Date().toLocaleTimeString() + ' - ' + msg);
 }
 
 let peerConnection;
@@ -94,7 +89,7 @@ function updateStatus() {
         statusSpan.style.color = '#f39c12'; // Orange
     } else {
         statusSpan.textContent = '相手の参加を待っています...';
-        statusSpan.style.color = '#e74c3c'; // Red
+        statusSpan.style.color = '#7f8c8d'; // Neutral Gray instead of Red
     }
 }
 

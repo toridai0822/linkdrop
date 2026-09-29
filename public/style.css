@@ -65,6 +65,12 @@ button:hover:not(:disabled) {
     background-color: #2980b9;
 }
 
+#qrcode {
+    display: flex;
+    justify-content: center;
+    margin: 15px 0;
+}
+
 #status {
     font-weight: bold;
     color: #e67e22;
