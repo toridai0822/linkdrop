@@ -20,10 +20,21 @@ let roomId;
 
 const CHUNK_SIZE = 16384; // 16KB
 
-// STUNサーバー設定（Googleの公開サーバーを利用）
+// STUN/TURNサーバー設定（NAT越えを強力にするために無料のTURNを追加）
 const configuration = {
     iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' }
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:openrelay.metered.ca:80' },
+        {
+            urls: 'turn:openrelay.metered.ca:80',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
+        },
+        {
+            urls: 'turn:openrelay.metered.ca:443',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
+        }
     ]
 };
 
@@ -87,6 +98,8 @@ socket.on('user-joined', async (userId) => {
     }
 });
 
+let iceCandidateQueue = [];
+
 // シグナリングメッセージの受信
 socket.on('signal', async (data) => {
     remoteSocketId = data.from;
@@ -102,10 +115,24 @@ socket.on('signal', async (data) => {
             const answer = await peerConnection.createAnswer();
             await peerConnection.setLocalDescription(answer);
             socket.emit('signal', { to: remoteSocketId, signal: peerConnection.localDescription });
+            
+            // バッファされたCandidateを追加
+            while(iceCandidateQueue.length) {
+                await peerConnection.addIceCandidate(iceCandidateQueue.shift());
+            }
         } else if (signal.type === 'answer') {
             await peerConnection.setRemoteDescription(new RTCSessionDescription(signal));
+            
+            // バッファされたCandidateを追加
+            while(iceCandidateQueue.length) {
+                await peerConnection.addIceCandidate(iceCandidateQueue.shift());
+            }
         } else if (signal.candidate) {
-            await peerConnection.addIceCandidate(new RTCIceCandidate(signal));
+            if (peerConnection.remoteDescription) {
+                await peerConnection.addIceCandidate(new RTCIceCandidate(signal));
+            } else {
+                iceCandidateQueue.push(new RTCIceCandidate(signal));
+            }
         }
     } catch (err) {
         console.error('Error handling signal:', err);
@@ -248,8 +275,7 @@ sendBtn.addEventListener('click', () => {
     readSlice(0);
 });
 
-
-// �l�b�g���[�N�w�i�̃A�j���[�V���� (tsParticles)
+// ネットワーク背景のアニメーション (tsParticles)
 tsParticles.load("tsparticles", {
     background: {
         color: {
@@ -313,4 +339,3 @@ tsParticles.load("tsparticles", {
     },
     detectRetina: true,
 });
-
