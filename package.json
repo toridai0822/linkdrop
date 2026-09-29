@@ -1,0 +1,13 @@
+{
+  "name": "p2p-file-transfer",
+  "version": "1.0.0",
+  "description": "1 on 1 P2P File Transfer App",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.2"
+  }
+}
