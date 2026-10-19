@@ -235,15 +235,18 @@ function updateProgressDialog(currentBytes, totalBytes, labelPrefix) {
     progressText.textContent = `${labelPrefix} ${formatMB(currentBytes)} MB / ${formatMB(totalBytes)} MB - ${percent.toFixed(1)}% 完了`;
 }
 
+function hideProgressDialog() {
+    progressArea.style.display = 'none';
+    progressBar.style.width = '0%';
+    progressPercent.textContent = '0%';
+}
+
 cancelBtn.addEventListener('click', () => {
     isTransferCanceled = true;
     sendQueue = [];
     receiveBuffer = [];
     incomingFileInfo = null;
-    progressTitle.textContent = '⏹ キャンセルしました';
-    progressText.textContent = '転送がキャンセルされました';
-    progressBar.style.width = '0%';
-    progressPercent.textContent = '0%';
+    hideProgressDialog();
     // 相手側にもキャンセルを通知
     const cancelMsg = JSON.stringify({ type: 'cancel' });
     if (isP2pReady && dataChannel && dataChannel.readyState === 'open') {
@@ -267,30 +270,20 @@ function handleIncomingData(data) {
             incomingFileInfo = null;
             receiveBuffer = [];
             receivedSize = 0;
-            progressTitle.textContent = '⏹ キャンセルされました';
-            progressText.textContent = '相手が転送をキャンセルしました';
-            progressBar.style.width = '0%';
-            progressPercent.textContent = '0%';
+            hideProgressDialog();
         } else if (msg.type === 'eof') {
             if (!incomingFileInfo) return;
-            updateProgressDialog(incomingFileInfo.size, incomingFileInfo.size, '受信完了:');
-            progressTitle.textContent = '✅ ファイル結合中...';
             const finishedFile = incomingFileInfo;
             const chunks = receiveBuffer;
             incomingFileInfo = null;
             receiveBuffer = [];
-            setTimeout(() => {
-                const blob = new Blob(chunks, { type: finishedFile.mime || 'application/octet-stream' });
-                const downloadUrl = URL.createObjectURL(blob);
-                const li = document.createElement('li');
-                li.innerHTML = `<span>${finishedFile.name} (${formatMB(finishedFile.size)} MB)</span> <a href="${downloadUrl}" download="${finishedFile.name}">ダウンロード</a>`;
-                downloadList.appendChild(li);
-                progressTitle.textContent = '✅ 受信完了！';
-                progressText.textContent = `${formatMB(finishedFile.size)} MB / ${formatMB(finishedFile.size)} MB - 100.0% 完了`;
-                progressBar.style.width = '100%';
-                progressPercent.textContent = '100%';
-                logDebug('ファイル受信完了');
-            }, 50);
+            const blob = new Blob(chunks, { type: finishedFile.mime || 'application/octet-stream' });
+            const downloadUrl = URL.createObjectURL(blob);
+            const li = document.createElement('li');
+            li.innerHTML = `<span>${finishedFile.name} (${formatMB(finishedFile.size)} MB)</span> <a href="${downloadUrl}" download="${finishedFile.name}">ダウンロード</a>`;
+            downloadList.appendChild(li);
+            hideProgressDialog();
+            logDebug('ファイル受信完了');
         }
     } else {
         if (!incomingFileInfo || isTransferCanceled) return;
@@ -380,11 +373,12 @@ async function sendPayloadSafely(payload) {
 async function processSendQueue() {
     if (isTransferCanceled) {
         isSending = false;
+        hideProgressDialog();
         return;
     }
     if (sendQueue.length === 0) {
         isSending = false;
-        progressTitle.textContent = '✅ 送信完了！';
+        hideProgressDialog();
         return;
     }
 
@@ -410,6 +404,7 @@ async function processSendQueue() {
         while (offset < file.size) {
             if (isTransferCanceled) {
                 isSending = false;
+                hideProgressDialog();
                 return;
             }
             const slice = file.slice(offset, offset + CHUNK_SIZE);
@@ -436,20 +431,24 @@ async function processSendQueue() {
         if (!isTransferCanceled) {
             // ファイル1つ送信完了通知
             await sendPayloadSafely(JSON.stringify({ type: 'eof' }));
-            updateProgressDialog(file.size, file.size, '送信完了:');
-            progressTitle.textContent = '✅ 送信完了！';
             logDebug('ファイル送信完了: ' + file.name);
         }
     } catch (err) {
         logDebug('ファイル送信エラー: ' + err.message);
         progressTitle.textContent = '⚠️ 送信エラー';
         progressText.textContent = `エラー: ${err.message}`;
+        return;
     }
 
-    // 少しだけ待機（受信側の処理時間確保）してから次のファイルを送信
-    setTimeout(() => {
-        processSendQueue();
-    }, 500);
+    if (sendQueue.length === 0) {
+        isSending = false;
+        hideProgressDialog();
+    } else {
+        // 次のファイルがある場合は少しだけ待機してから送信
+        setTimeout(() => {
+            processSendQueue();
+        }, 300);
+    }
 }
 
 // 背景アニメーション
