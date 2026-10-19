@@ -166,6 +166,8 @@ function createPeerConnection() {
 
 function setupDataChannel() {
     dataChannel.binaryType = 'arraybuffer';
+    // バッファ下限しきい値を256KBに設定
+    dataChannel.bufferedAmountLowThreshold = 256 * 1024;
     dataChannel.onopen = () => {
         logDebug('WebRTC P2P接続 成功！');
         isP2pReady = true;
@@ -175,10 +177,20 @@ function setupDataChannel() {
         isP2pReady = false;
         updateStatus();
     };
+    dataChannel.onerror = (err) => {
+        logDebug('DataChannel エラー: ' + err);
+    };
     dataChannel.onmessage = (event) => {
         handleIncomingData(event.data);
     };
 }
+
+// 再接続時に自動でルームへ再参加する
+socket.on('connect', () => {
+    if (roomId) {
+        socket.emit('join-room', roomId);
+    }
+});
 
 // -------------------------
 // WebSocket (フォールバック) 経由の受信
@@ -197,6 +209,11 @@ socket.on('file-relay', (data) => {
 let receiveBuffer = [];
 let receivedSize = 0;
 let incomingFileInfo = null;
+let lastReceiveUiUpdate = 0;
+
+function formatMB(bytes) {
+    return (bytes / (1024 * 1024)).toFixed(1);
+}
 
 function handleIncomingData(data) {
     if (typeof data === 'string') {
@@ -205,34 +222,46 @@ function handleIncomingData(data) {
             incomingFileInfo = msg;
             receiveBuffer = [];
             receivedSize = 0;
-            progressText.textContent = `受信中: ${msg.name} ...`;
+            lastReceiveUiUpdate = 0;
+            progressText.textContent = `受信中: ${msg.name} (0% - 0.0 / ${formatMB(msg.size)} MB)`;
             progressBar.style.width = '0%';
         } else if (msg.type === 'eof') {
-            const blob = new Blob(receiveBuffer);
-            const downloadUrl = URL.createObjectURL(blob);
-            const li = document.createElement('li');
-            li.innerHTML = `<span>${incomingFileInfo.name} (${(incomingFileInfo.size / 1024 / 1024).toFixed(2)} MB)</span> <a href="${downloadUrl}" download="${incomingFileInfo.name}">ダウンロード</a>`;
-            downloadList.appendChild(li);
-            progressText.textContent = '受信完了！';
-            progressBar.style.width = '100%';
-            receiveBuffer = [];
-            logDebug('ファイル受信完了');
+            progressText.textContent = `ファイル結合中: ${incomingFileInfo.name} ...`;
+            setTimeout(() => {
+                const blob = new Blob(receiveBuffer, { type: incomingFileInfo.mime || 'application/octet-stream' });
+                const downloadUrl = URL.createObjectURL(blob);
+                const li = document.createElement('li');
+                li.innerHTML = `<span>${incomingFileInfo.name} (${formatMB(incomingFileInfo.size)} MB)</span> <a href="${downloadUrl}" download="${incomingFileInfo.name}">ダウンロード</a>`;
+                downloadList.appendChild(li);
+                progressText.textContent = `受信完了！ (${incomingFileInfo.name})`;
+                progressBar.style.width = '100%';
+                receiveBuffer = [];
+                logDebug('ファイル受信完了');
+            }, 50);
         }
     } else {
         receiveBuffer.push(data);
-        receivedSize += data.byteLength;
-        if (incomingFileInfo) {
-            const percent = (receivedSize / incomingFileInfo.size) * 100;
-            progressBar.style.width = percent + '%';
+        const chunkLen = data.byteLength || data.length || 0;
+        receivedSize += chunkLen;
+        if (incomingFileInfo && incomingFileInfo.size > 0) {
+            const now = Date.now();
+            // 画面更新の負荷を下げるため100msごと、または完了時に表示更新
+            if (now - lastReceiveUiUpdate > 100 || receivedSize >= incomingFileInfo.size) {
+                lastReceiveUiUpdate = now;
+                const percent = Math.min(100, (receivedSize / incomingFileInfo.size) * 100);
+                progressBar.style.width = percent.toFixed(1) + '%';
+                progressText.textContent = `受信中: ${incomingFileInfo.name} (${Math.floor(percent)}% - ${formatMB(receivedSize)} / ${formatMB(incomingFileInfo.size)} MB)`;
+            }
         }
     }
 }
 
 // -------------------------
-// ファイル送信処理（複数ファイル対応キュー方式）
+// ファイル送信処理（複数ファイル・大容量バックプレッシャー対応）
 // -------------------------
 let sendQueue = [];
 let isSending = false;
+const MAX_P2P_BUFFER = 1024 * 1024; // 1MBを超えたら送信を一時待機（ブラウザのバッファパンク防止）
 
 sendBtn.addEventListener('click', () => {
     const files = fileInput.files;
@@ -252,7 +281,49 @@ sendBtn.addEventListener('click', () => {
     }
 });
 
-function processSendQueue() {
+// WebRTCの送信バッファが空くまで確実に待機する関数
+function waitForP2pBufferDrain() {
+    return new Promise((resolve) => {
+        if (!dataChannel || dataChannel.readyState !== 'open' || dataChannel.bufferedAmount <= MAX_P2P_BUFFER) {
+            resolve();
+            return;
+        }
+        let resolved = false;
+        const done = () => {
+            if (resolved) return;
+            resolved = true;
+            dataChannel.onbufferedamountlow = null;
+            clearInterval(timer);
+            resolve();
+        };
+        dataChannel.onbufferedamountlow = done;
+        const timer = setInterval(() => {
+            if (!dataChannel || dataChannel.readyState !== 'open' || dataChannel.bufferedAmount <= MAX_P2P_BUFFER) {
+                done();
+            }
+        }, 20);
+    });
+}
+
+// 1チャンクを安全に送信する関数（P2Pバッファ制御＆サーバー中継ACK制御）
+async function sendPayloadSafely(payload) {
+    if (isP2pReady && dataChannel && dataChannel.readyState === 'open') {
+        while (dataChannel.readyState === 'open' && dataChannel.bufferedAmount > MAX_P2P_BUFFER) {
+            await waitForP2pBufferDrain();
+        }
+        dataChannel.send(payload);
+    } else {
+        await new Promise((resolve) => {
+            socket.emit('file-relay', { roomId: roomId, payload: payload }, () => {
+                resolve();
+            });
+            // 万一サーバーからACKが返らない場合のタイムアウト保険
+            setTimeout(resolve, 3000);
+        });
+    }
+}
+
+async function processSendQueue() {
     if (sendQueue.length === 0) {
         isSending = false;
         progressText.textContent = 'すべてのファイルの送信が完了しました！';
@@ -261,63 +332,59 @@ function processSendQueue() {
 
     isSending = true;
     const file = sendQueue.shift(); // キューから最初のファイルを取り出す
+    const remainText = sendQueue.length > 0 ? ` (残り ${sendQueue.length} 個)` : '';
 
-    progressText.textContent = `送信中: ${file.name} (残り ${sendQueue.length} 個)...`;
+    progressText.textContent = `送信中: ${file.name} (0% - 0.0 / ${formatMB(file.size)} MB)${remainText}`;
     progressBar.style.width = '0%';
     logDebug('ファイル送信開始: ' + file.name);
 
-    const sendData = (payload) => {
-        if (isP2pReady && dataChannel && dataChannel.readyState === 'open') {
-            dataChannel.send(payload);
-        } else {
-            socket.emit('file-relay', { roomId: roomId, payload: payload });
-        }
-    };
+    try {
+        // メタデータの送信
+        await sendPayloadSafely(JSON.stringify({
+            type: 'meta',
+            name: file.name,
+            size: file.size,
+            mime: file.type || 'application/octet-stream'
+        }));
 
-    // メタデータの送信
-    sendData(JSON.stringify({ type: 'meta', name: file.name, size: file.size }));
+        let offset = 0;
+        let lastSendUiUpdate = 0;
 
-    const reader = new FileReader();
-    let offset = 0;
+        while (offset < file.size) {
+            const slice = file.slice(offset, offset + CHUNK_SIZE);
+            const buffer = await slice.arrayBuffer();
 
-    reader.onload = (e) => {
-        if (isP2pReady && dataChannel.bufferedAmount > 8 * 1024 * 1024) {
-            setTimeout(() => {
-                sendData(e.target.result);
-                updateProgressAndReadNext();
-            }, 50);
-            return;
-        }
+            await sendPayloadSafely(buffer);
 
-        sendData(e.target.result);
-        updateProgressAndReadNext();
-
-        function updateProgressAndReadNext() {
-            offset += e.target.result.byteLength;
-            const percent = (offset / file.size) * 100;
-            progressBar.style.width = percent + '%';
-
-            if (offset < file.size) {
-                readSlice(offset);
-            } else {
-                // ファイル1つ送信完了
-                sendData(JSON.stringify({ type: 'eof' }));
-                logDebug('ファイル送信完了: ' + file.name);
-                
-                // 少しだけ待機（受信側の処理時間確保）してから次のファイルを送信
-                setTimeout(() => {
-                    processSendQueue();
-                }, 500);
+            offset += buffer.byteLength;
+            const now = Date.now();
+            if (now - lastSendUiUpdate > 100 || offset >= file.size) {
+                lastSendUiUpdate = now;
+                const percent = Math.min(100, (offset / file.size) * 100);
+                progressBar.style.width = percent.toFixed(1) + '%';
+                progressText.textContent = `送信中: ${file.name} (${Math.floor(percent)}% - ${formatMB(offset)} / ${formatMB(file.size)} MB)${remainText}`;
             }
         }
-    };
 
-    const readSlice = (o) => {
-        const slice = file.slice(o, o + CHUNK_SIZE);
-        reader.readAsArrayBuffer(slice);
-    };
+        // 送信完了前にP2Pバッファが完全に空になるのを待つ
+        if (isP2pReady && dataChannel && dataChannel.readyState === 'open') {
+            while (dataChannel.readyState === 'open' && dataChannel.bufferedAmount > 0) {
+                await new Promise(r => setTimeout(r, 50));
+            }
+        }
 
-    readSlice(0);
+        // ファイル1つ送信完了通知
+        await sendPayloadSafely(JSON.stringify({ type: 'eof' }));
+        logDebug('ファイル送信完了: ' + file.name);
+    } catch (err) {
+        logDebug('ファイル送信エラー: ' + err.message);
+        progressText.textContent = `送信エラー: ${err.message}`;
+    }
+
+    // 少しだけ待機（受信側の処理時間確保）してから次のファイルを送信
+    setTimeout(() => {
+        processSendQueue();
+    }, 500);
 }
 
 // 背景アニメーション

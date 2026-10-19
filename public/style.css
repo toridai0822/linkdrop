@@ -76,7 +76,7 @@ button:hover:not(:disabled) {
     color: #e67e22;
 }
 
-.progress-container {
+.progress-bar-container {
     width: 100%;
     background-color: #e0e0e0;
     border-radius: 4px;

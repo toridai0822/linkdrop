@@ -33,8 +33,9 @@ io.on('connection', (socket) => {
     });
 
     // P2Pがブロックされた場合の、Socket.IO経由でのファイルデータ中継
-    socket.on('file-relay', (data) => {
+    socket.on('file-relay', (data, callback) => {
         socket.to(data.roomId).emit('file-relay', data);
+        if (typeof callback === 'function') callback();
     });
 
     socket.on('disconnect', () => {
