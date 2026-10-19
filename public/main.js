@@ -9,8 +9,13 @@ const currentRoomSpan = document.getElementById('current-room');
 const statusSpan = document.getElementById('status');
 const fileInput = document.getElementById('file-input');
 const sendBtn = document.getElementById('send-btn');
+const progressArea = document.getElementById('progress-area');
+const progressTitle = document.getElementById('progress-title');
+const progressFilename = document.getElementById('progress-filename');
 const progressBar = document.getElementById('progress-bar');
 const progressText = document.getElementById('progress-text');
+const progressPercent = document.getElementById('progress-percent');
+const cancelBtn = document.getElementById('cancel-btn');
 const downloadList = document.getElementById('download-list');
 
 function logDebug(msg) {
@@ -204,53 +209,100 @@ socket.on('file-relay', (data) => {
 
 
 // -------------------------
-// ファイル受信処理（共通）
+// ファイル受信・送信のダイアログUI制御
 // -------------------------
 let receiveBuffer = [];
 let receivedSize = 0;
 let incomingFileInfo = null;
 let lastReceiveUiUpdate = 0;
+let isTransferCanceled = false;
 
 function formatMB(bytes) {
     return (bytes / (1024 * 1024)).toFixed(1);
 }
 
+function showProgressDialog(modeTitle, fileName, currentBytes, totalBytes) {
+    progressArea.style.display = 'block';
+    progressTitle.textContent = modeTitle;
+    progressFilename.textContent = fileName;
+    updateProgressDialog(currentBytes, totalBytes, modeTitle);
+}
+
+function updateProgressDialog(currentBytes, totalBytes, labelPrefix) {
+    const percent = totalBytes > 0 ? Math.min(100, (currentBytes / totalBytes) * 100) : 0;
+    progressBar.style.width = percent.toFixed(1) + '%';
+    progressPercent.textContent = `${Math.floor(percent)}%`;
+    progressText.textContent = `${labelPrefix} ${formatMB(currentBytes)} MB / ${formatMB(totalBytes)} MB - ${percent.toFixed(1)}% 完了`;
+}
+
+cancelBtn.addEventListener('click', () => {
+    isTransferCanceled = true;
+    sendQueue = [];
+    receiveBuffer = [];
+    incomingFileInfo = null;
+    progressTitle.textContent = '⏹ キャンセルしました';
+    progressText.textContent = '転送がキャンセルされました';
+    progressBar.style.width = '0%';
+    progressPercent.textContent = '0%';
+    // 相手側にもキャンセルを通知
+    const cancelMsg = JSON.stringify({ type: 'cancel' });
+    if (isP2pReady && dataChannel && dataChannel.readyState === 'open') {
+        try { dataChannel.send(cancelMsg); } catch (e) {}
+    } else if (roomId) {
+        socket.emit('file-relay', { roomId: roomId, payload: cancelMsg });
+    }
+});
+
 function handleIncomingData(data) {
     if (typeof data === 'string') {
         const msg = JSON.parse(data);
         if (msg.type === 'meta') {
+            isTransferCanceled = false;
             incomingFileInfo = msg;
             receiveBuffer = [];
             receivedSize = 0;
             lastReceiveUiUpdate = 0;
-            progressText.textContent = `受信中: ${msg.name} (0% - 0.0 / ${formatMB(msg.size)} MB)`;
+            showProgressDialog('📥 受信中...', msg.name, 0, msg.size);
+        } else if (msg.type === 'cancel') {
+            incomingFileInfo = null;
+            receiveBuffer = [];
+            receivedSize = 0;
+            progressTitle.textContent = '⏹ キャンセルされました';
+            progressText.textContent = '相手が転送をキャンセルしました';
             progressBar.style.width = '0%';
+            progressPercent.textContent = '0%';
         } else if (msg.type === 'eof') {
-            progressText.textContent = `ファイル結合中: ${incomingFileInfo.name} ...`;
+            if (!incomingFileInfo) return;
+            updateProgressDialog(incomingFileInfo.size, incomingFileInfo.size, '受信完了:');
+            progressTitle.textContent = '✅ ファイル結合中...';
+            const finishedFile = incomingFileInfo;
+            const chunks = receiveBuffer;
+            incomingFileInfo = null;
+            receiveBuffer = [];
             setTimeout(() => {
-                const blob = new Blob(receiveBuffer, { type: incomingFileInfo.mime || 'application/octet-stream' });
+                const blob = new Blob(chunks, { type: finishedFile.mime || 'application/octet-stream' });
                 const downloadUrl = URL.createObjectURL(blob);
                 const li = document.createElement('li');
-                li.innerHTML = `<span>${incomingFileInfo.name} (${formatMB(incomingFileInfo.size)} MB)</span> <a href="${downloadUrl}" download="${incomingFileInfo.name}">ダウンロード</a>`;
+                li.innerHTML = `<span>${finishedFile.name} (${formatMB(finishedFile.size)} MB)</span> <a href="${downloadUrl}" download="${finishedFile.name}">ダウンロード</a>`;
                 downloadList.appendChild(li);
-                progressText.textContent = `受信完了！ (${incomingFileInfo.name})`;
+                progressTitle.textContent = '✅ 受信完了！';
+                progressText.textContent = `${formatMB(finishedFile.size)} MB / ${formatMB(finishedFile.size)} MB - 100.0% 完了`;
                 progressBar.style.width = '100%';
-                receiveBuffer = [];
+                progressPercent.textContent = '100%';
                 logDebug('ファイル受信完了');
             }, 50);
         }
     } else {
+        if (!incomingFileInfo || isTransferCanceled) return;
         receiveBuffer.push(data);
         const chunkLen = data.byteLength || data.length || 0;
         receivedSize += chunkLen;
-        if (incomingFileInfo && incomingFileInfo.size > 0) {
+        if (incomingFileInfo.size > 0) {
             const now = Date.now();
-            // 画面更新の負荷を下げるため100msごと、または完了時に表示更新
-            if (now - lastReceiveUiUpdate > 100 || receivedSize >= incomingFileInfo.size) {
+            // 画面更新の負荷を下げるため80msごと、または完了時に表示更新
+            if (now - lastReceiveUiUpdate > 80 || receivedSize >= incomingFileInfo.size) {
                 lastReceiveUiUpdate = now;
-                const percent = Math.min(100, (receivedSize / incomingFileInfo.size) * 100);
-                progressBar.style.width = percent.toFixed(1) + '%';
-                progressText.textContent = `受信中: ${incomingFileInfo.name} (${Math.floor(percent)}% - ${formatMB(receivedSize)} / ${formatMB(incomingFileInfo.size)} MB)`;
+                updateProgressDialog(receivedSize, incomingFileInfo.size, '受信中...');
             }
         }
     }
@@ -266,6 +318,8 @@ const MAX_P2P_BUFFER = 1024 * 1024; // 1MBを超えたら送信を一時待機�
 sendBtn.addEventListener('click', () => {
     const files = fileInput.files;
     if (files.length === 0) return;
+
+    isTransferCanceled = false;
 
     // 選択された全ファイルをキューに追加
     for (let i = 0; i < files.length; i++) {
@@ -324,9 +378,13 @@ async function sendPayloadSafely(payload) {
 }
 
 async function processSendQueue() {
+    if (isTransferCanceled) {
+        isSending = false;
+        return;
+    }
     if (sendQueue.length === 0) {
         isSending = false;
-        progressText.textContent = 'すべてのファイルの送信が完了しました！';
+        progressTitle.textContent = '✅ 送信完了！';
         return;
     }
 
@@ -334,8 +392,7 @@ async function processSendQueue() {
     const file = sendQueue.shift(); // キューから最初のファイルを取り出す
     const remainText = sendQueue.length > 0 ? ` (残り ${sendQueue.length} 個)` : '';
 
-    progressText.textContent = `送信中: ${file.name} (0% - 0.0 / ${formatMB(file.size)} MB)${remainText}`;
-    progressBar.style.width = '0%';
+    showProgressDialog(`📤 送信中...${remainText}`, file.name, 0, file.size);
     logDebug('ファイル送信開始: ' + file.name);
 
     try {
@@ -351,6 +408,10 @@ async function processSendQueue() {
         let lastSendUiUpdate = 0;
 
         while (offset < file.size) {
+            if (isTransferCanceled) {
+                isSending = false;
+                return;
+            }
             const slice = file.slice(offset, offset + CHUNK_SIZE);
             const buffer = await slice.arrayBuffer();
 
@@ -358,27 +419,31 @@ async function processSendQueue() {
 
             offset += buffer.byteLength;
             const now = Date.now();
-            if (now - lastSendUiUpdate > 100 || offset >= file.size) {
+            if (now - lastSendUiUpdate > 80 || offset >= file.size) {
                 lastSendUiUpdate = now;
-                const percent = Math.min(100, (offset / file.size) * 100);
-                progressBar.style.width = percent.toFixed(1) + '%';
-                progressText.textContent = `送信中: ${file.name} (${Math.floor(percent)}% - ${formatMB(offset)} / ${formatMB(file.size)} MB)${remainText}`;
+                updateProgressDialog(offset, file.size, '送信中...');
             }
         }
 
         // 送信完了前にP2Pバッファが完全に空になるのを待つ
         if (isP2pReady && dataChannel && dataChannel.readyState === 'open') {
             while (dataChannel.readyState === 'open' && dataChannel.bufferedAmount > 0) {
+                if (isTransferCanceled) break;
                 await new Promise(r => setTimeout(r, 50));
             }
         }
 
-        // ファイル1つ送信完了通知
-        await sendPayloadSafely(JSON.stringify({ type: 'eof' }));
-        logDebug('ファイル送信完了: ' + file.name);
+        if (!isTransferCanceled) {
+            // ファイル1つ送信完了通知
+            await sendPayloadSafely(JSON.stringify({ type: 'eof' }));
+            updateProgressDialog(file.size, file.size, '送信完了:');
+            progressTitle.textContent = '✅ 送信完了！';
+            logDebug('ファイル送信完了: ' + file.name);
+        }
     } catch (err) {
         logDebug('ファイル送信エラー: ' + err.message);
-        progressText.textContent = `送信エラー: ${err.message}`;
+        progressTitle.textContent = '⚠️ 送信エラー';
+        progressText.textContent = `エラー: ${err.message}`;
     }
 
     // 少しだけ待機（受信側の処理時間確保）してから次のファイルを送信
